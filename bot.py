@@ -62,7 +62,7 @@ async def send_startup_message(bot: Bot):
         f"📋 Watching *{len(WATCHLIST)}* cards\n"
         f"⏱️ Scanning every *{SCAN_INTERVAL_MINUTES} minutes*\n"
         f"🎯 Alerting when *{round((1-THRESHOLD)*100)}%+* below market\n\n"
-        f"_Platforms: eBay · Courtyard · Phygitals_\n"
+        f"_Platforms: eBay · TCGPlayer · Beezie · Courtyard · Phygitals_\n"
         f"_Price source: PriceCharting \\+ eBay sold_"
     )
     await bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode=ParseMode.MARKDOWN)
@@ -116,3 +116,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
