@@ -299,7 +299,7 @@ def get_tcgapi_dev_price(card_name: str, grade: str = "raw") -> float | None:
                    card_name.lower()).strip()
     try:
         resp = requests.get(
-            "https://tcgapi.dev/api/v1/cards/search",
+            "https://api.tcgapi.dev/v1/search/cards",
             headers={"Authorization": f"Bearer {TCGAPI_DEV_KEY}"},
             params={"q": f"one piece {query}", "game": "one-piece"},
             timeout=10
