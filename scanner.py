@@ -37,165 +37,110 @@ def build_pricecharting_url(card_name: str) -> str:
 
 
 def get_pricecharting_data(card_name: str) -> dict:
-    """
-    Scrape PriceCharting card page for:
-    - Current prices by grade (ungraded, PSA 9, PSA 10, etc.)
-    - Historical chart data (price over time)
-    - Trend direction (rising / falling / stable)
-    """
     url = build_pricecharting_url(card_name)
     resp = polite_get(url)
-
     if not resp or resp.status_code != 200:
-        log.warning(f"PriceCharting: no page found for '{card_name}' at {url}")
+        log.warning(f"PriceCharting: no page for '{card_name}'")
         return {}
 
     soup = BeautifulSoup(resp.text, "html.parser")
     result = {"url": url, "prices": {}, "history": [], "trend": "unknown", "price_3m_ago": None}
 
-    # ── Current prices table ──
-    # PriceCharting puts prices in a table with id="price-guide" or similar
     for row in soup.select("tr"):
         cells = row.select("td")
         if len(cells) >= 2:
             grade_raw = cells[0].get_text(strip=True)
             price_raw = cells[-1].get_text(strip=True)
-            price_raw = price_raw.replace("£", "").replace("$", "").replace(",", "").strip()
+            price_raw = price_raw.replace("£","").replace("$","").replace(",","").strip()
             try:
                 result["prices"][grade_raw] = float(price_raw)
             except ValueError:
                 pass
 
-    # ── Historical chart data (embedded in <script> tags as JS variable) ──
     for script in soup.find_all("script"):
         text = script.string or ""
-
-        # PriceCharting embeds: var chartData = [[epoch_ms, price_cents], ...]
         match = re.search(r"var\s+chartData\s*=\s*(\[[\s\S]*?\]);", text)
         if not match:
-            # also try: chartData: [...]
             match = re.search(r"chartData[\"']?\s*:\s*(\[[\s\S]*?\])", text)
-
         if match:
             try:
                 raw = json.loads(match.group(1))
-                # Each point: [timestamp_ms, price_in_cents]
                 points = []
                 for p in raw:
                     if isinstance(p, list) and len(p) >= 2 and p[1] is not None:
-                        points.append({
-                            "timestamp": p[0],
-                            "price_gbp": round((p[1] / 100) * 0.79, 2)
-                        })
+                        points.append({"timestamp": p[0], "price_gbp": round((p[1]/100)*0.79, 2)})
                 result["history"] = points
-
-                # ── Trend calculation ──
                 if len(points) >= 10:
                     recent = [p["price_gbp"] for p in points[-8:]]
-                    older = [p["price_gbp"] for p in points[-20:-8]]
+                    older  = [p["price_gbp"] for p in points[-20:-8]]
                     if older:
-                        avg_recent = sum(recent) / len(recent)
-                        avg_older = sum(older) / len(older)
-                        change_pct = ((avg_recent - avg_older) / avg_older) * 100
-                        if change_pct > 5:
-                            result["trend"] = "rising"
-                        elif change_pct < -5:
-                            result["trend"] = "falling"
-                        else:
-                            result["trend"] = "stable"
-
-                    # 3-month-ago price (roughly 90 days back)
-                    # Points are roughly weekly so ~13 points = 3 months
+                        avg_r = sum(recent)/len(recent)
+                        avg_o = sum(older)/len(older)
+                        pct   = ((avg_r - avg_o)/avg_o)*100
+                        result["trend"] = "rising" if pct > 5 else ("falling" if pct < -5 else "stable")
                     if len(points) >= 13:
                         result["price_3m_ago"] = points[-13]["price_gbp"]
-
-            except (json.JSONDecodeError, IndexError, KeyError) as e:
-                log.warning(f"Could not parse chart data: {e}")
+            except Exception as e:
+                log.warning(f"Chart parse error: {e}")
 
     return result
 
 
 def get_current_price_from_pc(pc_data: dict, grade: str = "raw") -> float | None:
-    """
-    Extract the right price from PriceCharting data based on requested grade.
-    Maps our grade labels to PriceCharting's row labels.
-    """
     prices = pc_data.get("prices", {})
     if not prices:
         return None
-
-    grade_lower = grade.lower()
-
-    # Direct match attempts (PriceCharting labels vary)
     grade_map = {
-        "raw": ["Ungraded", "ungraded", "Complete", "NM"],
-        "psa 10": ["PSA 10", "Grade 10", "Graded 10"],
-        "psa 9": ["PSA 9", "Grade 9", "Graded 9"],
-        "psa 8": ["PSA 8", "Grade 8", "Graded 8"],
-        "bgs 9.5": ["BGS 9.5", "Beckett 9.5"],
-        "cgc 10": ["CGC 10", "CGC Pristine"],
+        "raw":    ["Ungraded","ungraded","Complete","NM"],
+        "psa 10": ["PSA 10","Grade 10","Graded 10"],
+        "psa 9":  ["PSA 9","Grade 9","Graded 9"],
+        "psa 8":  ["PSA 8","Grade 8","Graded 8"],
+        "bgs 9.5":["BGS 9.5","Beckett 9.5"],
+        "cgc 10": ["CGC 10","CGC Pristine"],
     }
-
-    candidates = grade_map.get(grade_lower, [grade])
-    for label in candidates:
+    for label in grade_map.get(grade.lower(), [grade]):
         if label in prices:
             return prices[label]
-
-    # Fallback: return first numeric price found
     for v in prices.values():
         if isinstance(v, (int, float)) and v > 0:
             return v
-
     return None
 
 
 # ─────────────────────────────────────────────────────────────
-# EBAY SOLD AVERAGE (fallback if PriceCharting has no data)
+# EBAY SOLD AVERAGE (fallback)
 # ─────────────────────────────────────────────────────────────
 
 def get_ebay_sold_avg(card_name: str, grade: str = "raw") -> float | None:
     query = f"One Piece {card_name} {grade}".strip()
-    params = {
-        "_nkw": query, "_sacat": "2536",
-        "LH_Complete": "1", "LH_Sold": "1", "_sop": "13",
-    }
+    params = {"_nkw": query, "_sacat": "2536", "LH_Complete": "1", "LH_Sold": "1", "_sop": "13"}
     resp = polite_get("https://www.ebay.co.uk/sch/i.html", params=params)
     if not resp or resp.status_code != 200:
         return None
-
     soup = BeautifulSoup(resp.text, "html.parser")
     prices = []
     for item in soup.select(".s-item"):
-        price_el = item.select_one(".s-item__price")
-        if not price_el:
+        el = item.select_one(".s-item__price")
+        if not el:
             continue
-        pt = price_el.text.strip().split(" to ")[0]
-        m = re.search(r"[\d,]+\.?\d*", pt.replace(",", ""))
+        m = re.search(r"[\d,]+\.?\d*", el.text.split(" to ")[0].replace(",",""))
         if m:
-            try:
-                prices.append(float(m.group()))
-            except ValueError:
-                pass
-
+            try: prices.append(float(m.group()))
+            except: pass
     if not prices:
         return None
-
     prices.sort()
-    trim = max(1, len(prices) // 10)
+    trim = max(1, len(prices)//10)
     trimmed = prices[trim:-trim] if len(prices) > 4 else prices
-    return round(trimmed[len(trimmed) // 2], 2)
+    return round(trimmed[len(trimmed)//2], 2)
 
 
 def get_market_price(card_name: str, grade: str, pc_data: dict) -> float | None:
-    """
-    Priority: PriceCharting page data → eBay sold average
-    """
     price = get_current_price_from_pc(pc_data, grade)
     if price and price > 1:
-        log.info(f"  PriceCharting price [{grade}]: £{price:.2f}")
+        log.info(f"  PriceCharting [{grade}]: £{price:.2f}")
         return round(price, 2)
-
-    log.info(f"  PriceCharting had no '{grade}' price — falling back to eBay sold avg")
+    log.info(f"  Falling back to eBay sold avg")
     price = get_ebay_sold_avg(card_name, grade)
     if price:
         log.info(f"  eBay sold avg [{grade}]: £{price:.2f}")
@@ -208,37 +153,142 @@ def get_market_price(card_name: str, grade: str, pc_data: dict) -> float | None:
 
 def search_ebay(card_name: str, grade: str = "raw") -> list[dict]:
     query = f"One Piece {card_name} {grade}".strip()
-    params = {
-        "_nkw": query, "_sacat": "2536",
-        "LH_BIN": "1", "_sop": "10", "_ipg": "60",
-    }
+    params = {"_nkw": query, "_sacat": "2536", "LH_BIN": "1", "_sop": "10", "_ipg": "60"}
     resp = polite_get("https://www.ebay.co.uk/sch/i.html", params=params)
     if not resp or resp.status_code != 200:
         return []
-
     soup = BeautifulSoup(resp.text, "html.parser")
     results = []
     for item in soup.select(".s-item"):
         title_el = item.select_one(".s-item__title")
         price_el = item.select_one(".s-item__price")
-        link_el = item.select_one(".s-item__link")
+        link_el  = item.select_one(".s-item__link")
         if not (title_el and price_el and link_el):
             continue
         title = title_el.text.strip()
         if title.lower() == "shop on ebay":
             continue
-        pt = price_el.text.strip().split(" to ")[0]
-        m = re.search(r"[\d,]+\.?\d*", pt.replace(",", ""))
+        m = re.search(r"[\d,]+\.?\d*", price_el.text.split(" to ")[0].replace(",",""))
         if not m:
             continue
         try:
             price = float(m.group())
-        except ValueError:
+        except:
             continue
-        link = link_el["href"].split("?")[0]
-        results.append({"title": title, "price": price, "url": link, "platform": "eBay"})
-
+        results.append({"title": title, "price": price,
+                        "url": link_el["href"].split("?")[0], "platform": "eBay"})
     log.info(f"  eBay: {len(results)} listings")
+    return results
+
+
+# ─────────────────────────────────────────────────────────────
+# TCGPLAYER
+# ─────────────────────────────────────────────────────────────
+
+def search_tcgplayer(card_name: str, grade: str = "raw") -> list[dict]:
+    """
+    Searches TCGPlayer for One Piece card listings.
+    TCGPlayer prices are in USD — converted to GBP.
+    """
+    query = f"{card_name}".replace(" ", "+")
+    url = f"https://www.tcgplayer.com/search/one-piece-card-game/product?q={query}&productLineName=one-piece-card-game&view=grid"
+    resp = polite_get(url)
+    if not resp or resp.status_code != 200:
+        log.info(f"  TCGPlayer: no response")
+        return []
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    results = []
+
+    for card in soup.select(".search-result, [class*='search-result'], .product-card__product"):
+        title_el = card.select_one(".product-card__title, h3, [class*='title']")
+        price_el = card.select_one(".product-card__market-price, [class*='price'], .inventory__price-with-shipping")
+        link_el  = card.select_one("a")
+
+        if not (title_el and price_el):
+            continue
+
+        price_text = price_el.get_text(strip=True).replace("$","").replace(",","").strip()
+        # Handle "Market Price: $X.XX" format
+        price_text = re.sub(r"[^\d.]", "", price_text.split("Market Price")[-1])
+        m = re.search(r"\d+\.?\d*", price_text)
+        if not m:
+            continue
+        try:
+            usd = float(m.group())
+            gbp = round(usd * 0.79, 2)
+        except:
+            continue
+
+        href = link_el["href"] if link_el else url
+        if not href.startswith("http"):
+            href = "https://www.tcgplayer.com" + href
+
+        results.append({
+            "title": title_el.get_text(strip=True),
+            "price": gbp,
+            "url": href,
+            "platform": "TCGPlayer"
+        })
+
+    log.info(f"  TCGPlayer: {len(results)} listings")
+    return results
+
+
+# ─────────────────────────────────────────────────────────────
+# BEEZIE
+# ─────────────────────────────────────────────────────────────
+
+def search_beezie(card_name: str, grade: str = "raw") -> list[dict]:
+    """
+    Searches Beezie marketplace for One Piece cards.
+    All items are vaulted in Brink's and pre-authenticated.
+    Prices in USD — converted to GBP.
+    """
+    query = f"one piece {card_name}".replace(" ", "%20")
+    url = f"https://beezie.com/marketplace?search={query}&category=trading-cards"
+    resp = polite_get(url)
+    if not resp or resp.status_code != 200:
+        log.info(f"  Beezie: no response")
+        return []
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    results = []
+
+    # ⚠️ Beezie uses React — if results are empty, inspect beezie.com/marketplace
+    # in DevTools and update these selectors to match current class names
+    for card in soup.select(
+        "[class*='product-card'], [class*='listing-card'], "
+        "[class*='item-card'], [data-testid*='card'], [class*='CollectibleCard']"
+    ):
+        title_el = card.select_one("h2, h3, [class*='title'], [class*='name']")
+        price_el = card.select_one("[class*='price'], [class*='Price']")
+        link_el  = card.select_one("a")
+
+        if not (title_el and price_el):
+            continue
+
+        m = re.search(r"[\d,]+\.?\d*", price_el.get_text().replace(",",""))
+        if not m:
+            continue
+        try:
+            usd = float(m.group())
+            gbp = round(usd * 0.79, 2)
+        except:
+            continue
+
+        href = link_el["href"] if link_el else url
+        if not href.startswith("http"):
+            href = "https://beezie.com" + href
+
+        results.append({
+            "title": title_el.get_text(strip=True),
+            "price": gbp,
+            "url": href,
+            "platform": "Beezie"
+        })
+
+    log.info(f"  Beezie: {len(results)} listings")
     return results
 
 
@@ -252,28 +302,25 @@ def search_courtyard(card_name: str, grade: str = "raw") -> list[dict]:
     resp = polite_get(url)
     if not resp or resp.status_code != 200:
         return []
-
     soup = BeautifulSoup(resp.text, "html.parser")
     results = []
-    # ⚠️ Update selectors if Courtyard changes their frontend
     for card in soup.select("[data-testid='listing-card'], .listing-card, .product-card"):
         title_el = card.select_one("h2, h3, .title, [class*='title']")
         price_el = card.select_one("[class*='price'], .price")
-        link_el = card.select_one("a")
+        link_el  = card.select_one("a")
         if not (title_el and price_el):
             continue
-        m = re.search(r"[\d,]+\.?\d*", price_el.text.replace(",", ""))
+        m = re.search(r"[\d,]+\.?\d*", price_el.text.replace(",",""))
         if not m:
             continue
         try:
             gbp = round(float(m.group()) * 0.79, 2)
-        except ValueError:
+        except:
             continue
         href = link_el["href"] if link_el else url
         if not href.startswith("http"):
             href = "https://www.courtyard.io" + href
         results.append({"title": title_el.text.strip(), "price": gbp, "url": href, "platform": "Courtyard"})
-
     log.info(f"  Courtyard: {len(results)} listings")
     return results
 
@@ -288,27 +335,25 @@ def search_phygitals(card_name: str, grade: str = "raw") -> list[dict]:
     resp = polite_get(url)
     if not resp or resp.status_code != 200:
         return []
-
     soup = BeautifulSoup(resp.text, "html.parser")
     results = []
     for card in soup.select(".product-card, .listing-item, [class*='card']"):
         title_el = card.select_one("h2, h3, [class*='name'], [class*='title']")
         price_el = card.select_one("[class*='price']")
-        link_el = card.select_one("a")
+        link_el  = card.select_one("a")
         if not (title_el and price_el):
             continue
-        m = re.search(r"[\d,]+\.?\d*", price_el.text.replace(",", ""))
+        m = re.search(r"[\d,]+\.?\d*", price_el.text.replace(",",""))
         if not m:
             continue
         try:
             gbp = round(float(m.group()) * 0.79, 2)
-        except ValueError:
+        except:
             continue
         href = link_el["href"] if link_el else url
         if not href.startswith("http"):
             href = "https://phygitals.com" + href
         results.append({"title": title_el.text.strip(), "price": gbp, "url": href, "platform": "Phygitals"})
-
     log.info(f"  Phygitals: {len(results)} listings")
     return results
 
@@ -321,38 +366,41 @@ def run_scan(watchlist: list[dict], threshold: float = 0.82) -> list[dict]:
     all_deals = []
 
     for card in watchlist:
-        name = card["name"]
+        name  = card["name"]
         grade = card.get("grade", "raw")
         log.info(f"\n📦 Scanning: {name} [{grade}]")
 
-        # Fetch PriceCharting data once per card (has both current price + history)
         pc_data = get_pricecharting_data(name)
-        market = get_market_price(name, grade, pc_data)
+        market  = get_market_price(name, grade, pc_data)
 
         if not market or market < 1:
-            log.warning(f"  No market price found, skipping")
+            log.warning(f"  No market price — skipping")
             continue
 
-        for listings in [
+        all_platforms = [
             search_ebay(name, grade),
+            search_tcgplayer(name, grade),
+            search_beezie(name, grade),
             search_courtyard(name, grade),
             search_phygitals(name, grade),
-        ]:
+        ]
+
+        for listings in all_platforms:
             for item in listings:
                 if item["price"] <= 0:
                     continue
                 ratio = item["price"] / market
                 if ratio < threshold:
                     all_deals.append({
-                        "card": name,
-                        "grade": grade,
-                        "platform": item["platform"],
-                        "listed": item["price"],
-                        "market": market,
+                        "card":        name,
+                        "grade":       grade,
+                        "platform":    item["platform"],
+                        "listed":      item["price"],
+                        "market":      market,
                         "discount_pct": round((1 - ratio) * 100),
-                        "url": item["url"],
-                        "title": item["title"],
-                        "trend": pc_data.get("trend", "unknown"),
+                        "url":         item["url"],
+                        "title":       item["title"],
+                        "trend":       pc_data.get("trend", "unknown"),
                         "price_3m_ago": pc_data.get("price_3m_ago"),
                     })
 
