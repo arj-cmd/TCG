@@ -45,10 +45,11 @@ def get_tcgapi_price(card_name: str, grade: str = "raw") -> float | None:
         log.warning("  TCGAPI_DEV_KEY not set — no price source available")
         return None
 
-    # Strip grade/condition words for cleaner search
-    query = re.sub(r"\b(english|sealed|psa \d+\.?\d*|bgs \d+\.?\d*|cgc \d+\.?\d*|raw)\b",
-                   "", card_name.lower()).strip()
-    query = re.sub(r"\s+", " ", query)
+    # Strip noise words — keep character name + set code for best tcgapi match
+    query = card_name.lower()
+    query = re.sub(r"\b(english|sealed|raw|psa \d+\.?\d*|bgs \d+\.?\d*|cgc \d+\.?\d*)\b", "", query)
+    query = re.sub(r"\b(manga rare|1st anniversary set|2nd anniversary set|3rd anniversary set|flagship battle|championship|trophy|regional winner|super pre-release winner|wanted poster|misprint|alt art|serial number)\b", "", query)
+    query = re.sub(r"\s+", " ", query).strip()
 
     try:
         resp = requests.get(
