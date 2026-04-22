@@ -6,8 +6,7 @@ from dotenv import load_dotenv
 load_dotenv()
 log = logging.getLogger(__name__)
 
-EBAY_APP_ID    = os.getenv("EBAY_APP_ID", "")
-TCGAPI_DEV_KEY = os.getenv("TCGAPI_DEV_KEY", "")
+EBAY_APP_ID = os.getenv("EBAY_APP_ID", "")  # eBay Finding API
 
 HEADERS_POOL = [
     {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36"},
