@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 load_dotenv()
 log = logging.getLogger(__name__)
 
-EBAY_APP_ID = os.getenv("EBAY_APP_ID", "")  # eBay Finding API
+EBAY_APP_ID    = os.getenv("EBAY_APP_ID", "")
 
 HEADERS_POOL = [
     {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36"},
@@ -27,94 +27,6 @@ def polite_get(url, params=None, timeout=15):
     except Exception as e:
         log.warning(f"Request failed {url}: {e}")
         return None
-
-
-# ─────────────────────────────────────────────────────────────
-# TCGAPI.DEV — PRIMARY PRICE SOURCE
-# Free 100 req/day — sign up at tcgapi.dev
-# Header: X-API-Key (not Authorization Bearer)
-# ─────────────────────────────────────────────────────────────
-
-def get_tcgapi_price(card_name: str, grade: str = "raw") -> float | None:
-    """
-    Look up market price from tcgapi.dev.
-    Results cached for 2 hours to preserve the 100 req/day free quota.
-    """
-    if not TCGAPI_DEV_KEY:
-        log.warning("  TCGAPI_DEV_KEY not set — no price source available")
-        return None
-
-    # Strip noise words — keep character name + set code for best tcgapi match
-    query = card_name.lower()
-    query = re.sub(r"\b(english|sealed|raw|psa \d+\.?\d*|bgs \d+\.?\d*|cgc \d+\.?\d*)\b", "", query)
-    query = re.sub(r"\b(manga rare|1st anniversary set|2nd anniversary set|3rd anniversary set|flagship battle|championship|trophy|regional winner|super pre-release winner|wanted poster|misprint|alt art|serial number)\b", "", query)
-    query = re.sub(r"\s+", " ", query).strip()
-
-    try:
-        resp = requests.get(
-            "https://api.tcgapi.dev/v1/search",
-            headers={"X-API-Key": TCGAPI_DEV_KEY},
-            params={"q": query, "game": "one-piece"},
-            timeout=10
-        )
-
-        if resp.status_code == 403:
-            log.warning(f"  tcgapi.dev: 403 — check API key is valid")
-            return None
-        if resp.status_code != 200:
-            log.warning(f"  tcgapi.dev: {resp.status_code} — {resp.text[:100]}")
-            return None
-
-        data  = resp.json()
-        cards = data.get("data", [])
-        if not cards:
-            log.info(f"  tcgapi.dev: no results for '{query}'")
-            return None
-
-        card  = cards[0]
-
-        # Pick the right price field based on grade
-        grade_lower = grade.lower()
-        if "psa 10" in grade_lower or "cgc 10" in grade_lower:
-            raw_price = card.get("price")
-        elif "psa 9" in grade_lower:
-            raw_price = card.get("low_price") or card.get("price")
-        elif "sealed" in grade_lower:
-            raw_price = card.get("price")
-        else:
-            raw_price = card.get("low_price") or card.get("price")
-
-        if not raw_price:
-            log.info(f"  tcgapi.dev: no price field for '{query}'")
-            return None
-
-        # tcgapi.dev returns USD — convert to GBP
-        gbp = round(float(raw_price) * 0.79, 2)
-        log.info(f"  tcgapi.dev: £{gbp:.2f} for '{query}' [{grade}]")
-        return gbp
-
-    except Exception as e:
-        log.warning(f"  tcgapi.dev error: {e}")
-        return None
-
-
-def get_market_price(card_name: str, grade: str) -> float | None:
-    """
-    Get market price — tcgapi.dev first, eBay API fallback when approved.
-    """
-    # 1. tcgapi.dev
-    price = get_tcgapi_price(card_name, grade)
-    if price and price > 1:
-        return price
-
-    # 2. eBay Finding API (when approved — add EBAY_APP_ID to Railway)
-    if EBAY_APP_ID:
-        price = get_ebay_sold_avg_api(card_name, grade)
-        if price:
-            return price
-
-    log.warning(f"  No market price found for '{card_name}' [{grade}]")
-    return None
 
 
 # ─────────────────────────────────────────────────────────────
@@ -442,5 +354,3 @@ def run_scan(watchlist: list[dict], threshold: float = 0.82) -> list[dict]:
                     })
 
     return sorted(all_deals, key=lambda x: x["discount_pct"], reverse=True)
-
-
