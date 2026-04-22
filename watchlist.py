@@ -201,6 +201,3 @@ WATCHLIST = [
     {"name": "Shonen Jump 2018 14 Jujutsu Kaisen chapter 1 Japanese magazine",   "grade": "raw"},
 
 ]
-
-]
-
